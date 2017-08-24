@@ -44,7 +44,7 @@ extension Section : Hidable, SectionDelegate {}
 extension Section {
 
     public func reload(with rowAnimation: UITableViewRowAnimation = .none) {
-        guard let tableView = (form?.delegate as? FormViewController)?.tableView, let index = index, index < tableView.numberOfSections else { return }
+        guard let tableView = (form?.delegate as? FormViewController)?.tableView, let index = index else { return }
         tableView.reloadSections(IndexSet(integer: index), with: rowAnimation)
     }
 }
@@ -53,8 +53,7 @@ extension Section {
 
     internal class KVOWrapper: NSObject {
 
-        @objc dynamic private var _rows = NSMutableArray()
-        @objc dynamic private var _deletedRows = NSMutableArray()
+        dynamic private var _rows = NSMutableArray()
         var rows: NSMutableArray {
             return mutableArrayValue(forKey: "_rows")
         }
@@ -72,7 +71,6 @@ extension Section {
             removeObserver(self, forKeyPath: "_rows")
             _rows.removeAllObjects()
             _allRows.removeAll()
-            _deletedRows.removeAllObjects()
         }
 
         public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
@@ -92,13 +90,11 @@ extension Section {
                     delegateValue?.rowsHaveBeenAdded(newRows, at: indexSet.map { IndexPath(row: $0, section: _index ) })
                 }
             case NSKeyValueChange.removal.rawValue:
-                _deletedRows.addObjects(from: oldRows)
                 let indexSet = change![NSKeyValueChangeKey.indexesKey] as! IndexSet
                 section?.rowsHaveBeenRemoved(oldRows, at: indexSet)
                 if let _index = section?.index {
                     delegateValue?.rowsHaveBeenRemoved(oldRows, at: indexSet.map { IndexPath(row: $0, section: _index ) })
                 }
-                _deletedRows.removeAllObjects()
             case NSKeyValueChange.replacement.rawValue:
                 let indexSet = change![NSKeyValueChangeKey.indexesKey] as! IndexSet
                 section?.rowsHaveBeenReplaced(oldRows: oldRows, newRows: newRows, at: indexSet)
@@ -108,10 +104,6 @@ extension Section {
             default:
                 assertionFailure()
             }
-        }
-        
-        public func deletedRows() -> [BaseRow] {
-            return _deletedRows as! [BaseRow]
         }
     }
 
@@ -201,13 +193,13 @@ open class Section {
 
     // MARK: Private
     lazy var kvoWrapper: KVOWrapper = { [unowned self] in return KVOWrapper(section: self) }()
-
+    
     var headerView: UIView?
     var footerView: UIView?
     var hiddenCache = false
 }
 
-extension Section: MutableCollection, BidirectionalCollection {
+extension Section : MutableCollection, BidirectionalCollection {
 
     // MARK: MutableCollectionType
 
@@ -216,12 +208,7 @@ extension Section: MutableCollection, BidirectionalCollection {
     public subscript (position: Int) -> BaseRow {
         get {
             if position >= kvoWrapper.rows.count {
-                let offsetPosition = position-kvoWrapper.rows.count
-                let deletedRows = kvoWrapper.deletedRows()
-                if offsetPosition >= deletedRows.count {
-                    assertionFailure("Section: Index out of bounds")
-                }
-                return deletedRows[offsetPosition]
+                assertionFailure("Section: Index out of bounds")
             }
             return kvoWrapper.rows[position] as! BaseRow
         }
@@ -246,16 +233,26 @@ extension Section: MutableCollection, BidirectionalCollection {
     }
 
     public subscript (range: Range<Int>) -> ArraySlice<BaseRow> {
-        get { return kvoWrapper.rows.map { $0 as! BaseRow }[range] }
-        set { replaceSubrange(range, with: newValue) }
+        get { return kvoWrapper.rows.map({ $0 as! BaseRow })[range.lowerBound...range.upperBound] }
+        set {
+            replaceSubrange(range, with: newValue)
+        }
     }
 
-    public func index(after i: Int) -> Int { return i + 1 }
-    public func index(before i: Int) -> Int { return i - 1 }
+    public func index(after i: Int) -> Int {return i + 1}
+    public func index(before i: Int) -> Int {return i - 1}
 
 }
 
-extension Section: RangeReplaceableCollection {
+/// To add `RangeReplaceableCollection` conformance to your custom collection,
+/// add an empty initializer and the `replaceSubrange(_:with:)` method to your
+/// custom type. `RangeReplaceableCollection` provides default implementations
+/// of all its other methods using this initializer and method. For example,
+/// the `removeSubrange(_:)` method is implemented by calling
+/// `replaceSubrange(_:with:)` with an empty collection for the `newElements`
+/// parameter. You can override any of the protocol's required methods to
+/// provide your own custom implementation.
+extension Section : RangeReplaceableCollection {
 
     // MARK: RangeReplaceableCollectionType
 
@@ -273,6 +270,7 @@ extension Section: RangeReplaceableCollection {
         }
     }
 
+    #if swift(>=3.2)
     public func replaceSubrange<C>(_ subrange: Range<Int>, with newElements: C) where C : Collection, C.Element == BaseRow {
         for i in subrange.lowerBound..<subrange.upperBound {
             if let row = kvoWrapper.rows.object(at: i) as? BaseRow {
@@ -289,6 +287,24 @@ extension Section: RangeReplaceableCollection {
             row.wasAddedTo(section: self)
         }
     }
+    #else
+    public func replaceSubrange<C>(_ subrange: Range<Index>, with newElements: C) where C : Collection, C.Iterator.Element == Iterator.Element {
+        for i in subrange.lowerBound..<subrange.upperBound {
+            if let row = kvoWrapper.rows.object(at: i) as? BaseRow {
+                row.willBeRemovedFromSection()
+                kvoWrapper._allRows.remove(at: kvoWrapper._allRows.index(of: row)!)
+            }
+        }
+        
+        kvoWrapper.rows.replaceObjects(in: NSRange(location: subrange.lowerBound, length: subrange.upperBound - subrange.lowerBound),
+                                       withObjectsFrom: newElements.map { $0 })
+        
+        kvoWrapper._allRows.insert(contentsOf: newElements, at: indexForInsertion(at: subrange.lowerBound))
+        for row in newElements {
+            row.wasAddedTo(section: self)
+        }
+    }
+    #endif
 
     public func removeAll(keepingCapacity keepCapacity: Bool = false) {
         // not doing anything with capacity
@@ -480,14 +496,5 @@ open class MultivaluedSection: Section {
             cell.formViewController()?.tableView(tableView, commit: .insert, forRowAt: indexPath)
         }
         self <<< addRow
-    }
-
-    /**
-     Method used to get all the values of the section.
-
-     - returns: An Array mapping the row values. [value]
-     */
-    public func values() -> [Any?] {
-        return kvoWrapper._allRows.filter({ $0.baseValue != nil }).map({ $0.baseValue })
     }
 }
