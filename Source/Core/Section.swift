@@ -162,6 +162,12 @@ open class Section {
 
     public required init() {}
 
+    #if swift(>=4.1)
+    public required init<S>(_ elements: S) where S: Sequence, S.Element == BaseRow {
+        self.append(contentsOf: elements)
+    }
+    #endif
+
     public init(_ initializer: (Section) -> Void) {
         initializer(self)
     }
@@ -492,6 +498,24 @@ open class MultivaluedSection: Section {
         self.multivaluedOptions = multivaluedOptions
         super.init(header: header, footer: footer, {section in initializer(section as! MultivaluedSection) })
         guard multivaluedOptions.contains(.Insert) else { return }
+        initialize()
+    }
+
+    public required init() {
+        self.multivaluedOptions = MultivaluedOptions.Insert.union(.Delete)
+        super.init()
+        initialize()
+    }
+
+    #if swift(>=4.1)
+    public required init<S>(_ elements: S) where S : Sequence, S.Element == BaseRow {
+        self.multivaluedOptions = MultivaluedOptions.Insert.union(.Delete)
+        super.init(elements)
+        initialize()
+    }
+    #endif
+
+    func initialize() {
         let addRow = addButtonProvider(self)
         addRow.onCellSelection { cell, row in
             guard let tableView = cell.formViewController()?.tableView, let indexPath = row.indexPath else { return }
@@ -500,14 +524,13 @@ open class MultivaluedSection: Section {
         self <<< addRow
     }
 
-    public required init() {
-        self.multivaluedOptions = MultivaluedOptions.Insert.union(.Delete)
-        super.init()
-        let addRow = addButtonProvider(self)
-        addRow.onCellSelection { cell, row in
-            guard let tableView = cell.formViewController()?.tableView, let indexPath = row.indexPath else { return }
-            cell.formViewController()?.tableView(tableView, commit: .insert, forRowAt: indexPath)
-        }
-        self <<< addRow
+    /**
+     Method used to get all the values of the section.
+
+     - returns: An Array mapping the row values. [value]
+     */
+    public func values() -> [Any?] {
+        return kvoWrapper._allRows.filter({ $0.baseValue != nil }).map({ $0.baseValue })
     }
+
 }
